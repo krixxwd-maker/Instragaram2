@@ -1,105 +1,84 @@
 from flask import Flask, request, render_template_string, jsonify
-import requests
+from instagrapi import Client
 from threading import Thread, Event
 import time
 import random
 import string
 from datetime import datetime
 import json
-import re
+import os
 
 app = Flask(__name__)
 app.debug = True
 
-# Instagram-specific headers
-headers = {
-    'User-Agent': 'Instagram 219.0.0.12.117 Android',
-    'Accept': '*/*',
-    'Accept-Language': 'en-US',
-    'Accept-Encoding': 'gzip, deflate',
-    'Connection': 'close',
-    'Authorization': None  # Will be set with the access token
-}
-
+# Task management dictionaries
 stop_events = {}
 threads = {}
 task_status = {}
 task_stats = {}
 
-def send_messages(access_tokens, thread_id, mn, time_interval, messages, task_id):
+def send_messages(username, password, thread_id, mn, time_interval, messages, task_id):
     stop_event = stop_events[task_id]
-    task_status[task_id] = "Running"
+    task_status[task_id] = "Starting..."
     task_stats[task_id] = {
-        "status": "Running",
+        "status": "Starting...",
         "start_time": datetime.now().strftime("%H:%M:%S"),
         "total_messages": 0,
         "successful_messages": 0,
         "failed_messages": 0,
         "last_message": "",
-        "last_update": datetime.now().strftime("%H:%M:%S")
+        "last_update": datetime.now().strftime("%H:%M:%S"),
+        "login_status": "Logging in..."
     }
-    
+
+    # Step 1: Login
+    try:
+        cl = Client()
+        cl.login(username, password)
+        task_stats[task_id]["login_status"] = "Success"
+        task_status[task_id] = "Running"
+        task_stats[task_id]["status"] = "Running"
+    except Exception as e:
+        task_status[task_id] = f"Login failed: {e}"
+        task_stats[task_id]["status"] = f"Login failed: {e}"
+        task_stats[task_id]["login_status"] = f"Failed: {e}"
+        return
+
+    # Step 2: Send messages
     while not stop_event.is_set():
         for message1 in messages:
             if stop_event.is_set():
                 break
-            for access_token in access_tokens:
-                if stop_event.is_set():
-                    break
-                    
-                # Instagram Direct API endpoint
-                api_url = 'https://i.instagram.com/api/v1/direct_v2/threads/broadcast/text/'
-                
-                # Prepare the message
-                message = str(mn) + ' ' + message1
-                
-                # Instagram-specific parameters
-                headers['Authorization'] = f'Bearer {access_token}'
-                
-                # Instagram requires a specific format for the request
-                data = {
-                    'thread_ids': f'[{"thread_id"}]',
-                    'text': message,
-                    'action': 'send_item'
-                }
-                
-                try:
-                    response = requests.post(api_url, data=data, headers=headers)
-                    task_stats[task_id]['total_messages'] += 1
-                    
-                    if response.status_code == 200:
-                        task_stats[task_id]['successful_messages'] += 1
-                        print(f"Message Sent Successfully From token {access_token}: {message}")
-                    else:
-                        task_stats[task_id]['failed_messages'] += 1
-                        print(f"Message Sent Failed From token {access_token}: {message}")
-                        
-                    task_stats[task_id]['last_message'] = f"{message[:20]}..." if len(message) > 20 else message
-                    task_stats[task_id]['last_update'] = datetime.now().strftime("%H:%M:%S")
-                    
-                except Exception as e:
-                    task_stats[task_id]['failed_messages'] += 1
-                    task_stats[task_id]['last_message'] = f"Error: {str(e)[:20]}..."
-                    print(f"Error sending message: {str(e)}")
-                
-                time.sleep(time_interval)
-    
+
+            message = str(mn) + ' ' + message1
+
+            try:
+                cl.direct_send(message, [], thread_ids=[thread_id])
+                task_stats[task_id]['total_messages'] += 1
+                task_stats[task_id]['successful_messages'] += 1
+                print(f"✅ Sent: {message}")
+            except Exception as e:
+                task_stats[task_id]['total_messages'] += 1
+                task_stats[task_id]['failed_messages'] += 1
+                print(f"❌ Failed: {message} | Error: {str(e)}")
+
+            task_stats[task_id]['last_message'] = f"{message[:20]}..." if len(message) > 20 else message
+            task_stats[task_id]['last_update'] = datetime.now().strftime("%H:%M:%S")
+
+            time.sleep(time_interval)
+
     task_status[task_id] = "Stopped"
     task_stats[task_id]['status'] = "Stopped"
     task_stats[task_id]['end_time'] = datetime.now().strftime("%H:%M:%S")
 
+
 @app.route('/', methods=['GET', 'POST'])
 def send_message():
     stop_key = None
+
     if request.method == 'POST':
-        token_option = request.form.get('tokenOption')
-
-        if token_option == 'single':
-            access_tokens = [request.form.get('singleToken')]
-        else:
-            token_file = request.files['tokenFile']
-            access_tokens = token_file.read().decode().strip().splitlines()
-
+        username = request.form.get('username')
+        password = request.form.get('password')
         thread_id = request.form.get('threadId')
         mn = request.form.get('kidx')
         time_interval = int(request.form.get('time'))
@@ -110,7 +89,7 @@ def send_message():
         task_id = ''.join(random.choices(string.ascii_letters + string.digits, k=8))
 
         stop_events[task_id] = Event()
-        thread = Thread(target=send_messages, args=(access_tokens, thread_id, mn, time_interval, messages, task_id))
+        thread = Thread(target=send_messages, args=(username, password, thread_id, mn, time_interval, messages, task_id))
         threads[task_id] = thread
         thread.start()
 
@@ -137,7 +116,7 @@ def send_message():
       animation: fadeIn 2s;
     }
     .container {
-      max-width: 350px; 
+      max-width: 350px;
       height: auto;
       border-radius: 20px;
       padding: 20px;
@@ -158,29 +137,29 @@ def send_message():
       color: white;
       animation: slideInLeft 1s;
     }
-    .header { 
-      text-align: center; 
-      padding-bottom: 20px; 
+    .header {
+      text-align: center;
+      padding-bottom: 20px;
       animation: bounceInDown 2s;
     }
-    .btn-submit { 
-      width: 100%; 
+    .btn-submit {
+      width: 100%;
       margin-top: 10px;
       animation: pulse 2s infinite;
       background: linear-gradient(45deg, #833ab4, #fd1d1d);
       border: none;
     }
-    .btn-stop { 
-      width: 100%; 
+    .btn-stop {
+      width: 100%;
       margin-top: 10px;
       animation: pulse 2s infinite;
       background: linear-gradient(45deg, #ff0000, #ff8c00);
       border: none;
     }
-    .footer { 
-      text-align: center; 
-      margin-top: 20px; 
-      color: #888; 
+    .footer {
+      text-align: center;
+      margin-top: 20px;
+      color: #888;
       animation: fadeInUp 2s;
     }
     .instagram-link {
@@ -306,12 +285,12 @@ def send_message():
       from { opacity: 0; transform: translateY(200px) scale(0.7); }
       to { opacity: 1; transform: translateY(0) scale(1); }
     }
-    
+
     @keyframes glow {
       from { text-shadow: 0 0 5px #fff, 0 0 10px #fff, 0 0 15px #e1306c, 0 0 20px #e1306c; }
       to { text-shadow: 0 0 10px #fff, 0 0 20px #fff, 0 0 30px #e1306c, 0 0 40px #e1306c; }
     }
-    
+
     .glowing-text {
       animation: glow 1s ease-in-out infinite alternate;
       font-size: 16px;
@@ -326,19 +305,12 @@ def send_message():
   <div class="container text-center">
     <form method="post" enctype="multipart/form-data">
       <div class="mb-3">
-        <label for="tokenOption" class="form-label">Select Token Option</label>
-        <select class="form-control" id="tokenOption" name="tokenOption" onchange="toggleTokenInput()" required>
-          <option value="single">Single Token</option>
-          <option value="multiple">Token File</option>
-        </select>
+        <label for="username" class="form-label">𝙀𝙉𝙏𝙀𝙍 𝙄𝙉𝙎𝙏𝘼𝙂𝙍𝘼𝙈 𝙐𝙎𝙀𝙍𝙉𝘼𝙈𝙀..⤵️</label>
+        <input type="text" class="form-control" id="username" name="username" required>
       </div>
-      <div class="mb-3" id="singleTokenInput">
-        <label for="singleToken" class="form-label">𝙀𝙉𝙏𝙀𝙍 𝙎𝙄𝙉𝙂𝙇𝙀 𝙏𝙊𝙆𝙀𝙉..⤵️</label>
-        <input type="text" class="form-control" id="singleToken" name="singleToken">
-      </div>
-      <div class="mb-3" id="tokenFileInput" style="display: none;">
-        <label for="tokenFile" class="form-label">Choose Token File</label>
-        <input type="file" class="form-control" id="tokenFile" name="tokenFile">
+      <div class="mb-3">
+        <label for="password" class="form-label">𝙀𝙉𝙏𝙀𝙍 𝙄𝙉𝙎𝙏𝘼𝙂𝙍𝘼𝙈 𝙋𝘼𝙎𝙎𝙒𝙊𝙍𝘿..⤵️</label>
+        <input type="password" class="form-control" id="password" name="password" required>
       </div>
       <div class="mb-3">
         <label for="threadId" class="form-label">𝙀𝙉𝙏𝙀𝙍 𝙄𝙉𝙎𝙏𝘼𝙂𝙍𝘼𝙈 𝙏𝙃𝙍𝙀𝘼𝘿 𝙄𝘿...⤵️</label>
@@ -371,7 +343,7 @@ def send_message():
       <button type="submit" class="btn btn-danger btn-stop">❤️ 𝙎𝙏𝙊𝙋 𝙎𝙀𝙍𝙑𝙀𝙍 ❤️</button>
     </form>
   </div>
-  
+
   <div class="mini-monitor" id="miniMonitor">
     <div class="monitor-header">
       <h5 class="glowing-text" style="margin: 0; font-size: 14px;">📊 LIVE STATS</h5>
@@ -383,7 +355,7 @@ def send_message():
       <p class="text-center" style="font-size: 11px; margin: 0;">No active tasks</p>
     </div>
   </div>
-  
+
   <footer class="footer">
     <p>☠️❣️👇𝐍𝐀𝐒𝐈𝐈𝐑 𝐀𝐋𝐈𝐈 𝐊𝐈𝐈𝐍𝐆 👇❣️☠️</p>
     <p><a href="https://www.instagram.com" style="color: #e1306c; font-size: 12px;">Instagram Edition</a></p>
@@ -393,38 +365,27 @@ def send_message():
       </a>
     </div>
   </footer>
-  
+
   <script>
-    function toggleTokenInput() {
-      var tokenOption = document.getElementById('tokenOption').value;
-      if (tokenOption == 'single') {
-        document.getElementById('singleTokenInput').style.display = 'block';
-        document.getElementById('tokenFileInput').style.display = 'none';
-      } else {
-        document.getElementById('singleTokenInput').style.display = 'none';
-        document.getElementById('tokenFileInput').style.display = 'block';
-      }
-    }
-    
     // Function to update mini monitoring
     function updateMiniMonitoring() {
       fetch('/get_stats')
         .then(response => response.json())
         .then(data => {
           const miniTaskList = document.getElementById('miniTaskList');
-          
+
           if (Object.keys(data).length === 0) {
             miniTaskList.innerHTML = '<p class="text-center" style="font-size: 11px; margin: 0;">No active tasks</p>';
             return;
           }
-          
+
           let html = '';
           for (const [taskId, stats] of Object.entries(data)) {
             const statusClass = stats.status === 'Running' ? 'status-running' : 'status-stopped';
-            const successRate = stats.total_messages > 0 
-              ? Math.round((stats.successful_messages / stats.total_messages) * 100) 
+            const successRate = stats.total_messages > 0
+              ? Math.round((stats.successful_messages / stats.total_messages) * 100)
               : 0;
-              
+
             html += `
               <div class="mini-task">
                 <div style="display: flex; justify-content: space-between;">
@@ -446,23 +407,24 @@ def send_message():
               </div>
             `;
           }
-          
+
           miniTaskList.innerHTML = html;
         })
         .catch(error => {
           console.error('Error fetching stats:', error);
         });
     }
-    
+
     // Update monitoring every 3 seconds
     setInterval(updateMiniMonitoring, 3000);
-    
+
     // Initial update
     updateMiniMonitoring();
   </script>
 </body>
 </html>
 ''', stop_key=stop_key)
+
 
 @app.route('/stop', methods=['POST'])
 def stop_task():
@@ -473,10 +435,18 @@ def stop_task():
     else:
         return f'No task found with ID {task_id}.'
 
+
 @app.route('/get_stats')
 def get_stats():
     return jsonify(task_stats)
 
+
 if __name__ == '__main__':
+    # Ensure instagrapi is installed
+    try:
+        import instagrapi
+    except ImportError:
+        print("❌ instagrapi is not installed. Run: pip install instagrapi")
+        exit(1)
 
     app.run(host='0.0.0.0', port=5000)
